@@ -6,6 +6,7 @@ from ..compat import compat_urlparse
 from ..utils import (
     ExtractorError,
     InAdvancePagedList,
+    OnDemandPagedList,
     orderedSet,
     str_to_int,
     unified_strdate,
@@ -13,7 +14,7 @@ from ..utils import (
 
 
 class MotherlessIE(InfoExtractor):
-    _VALID_URL = r'https?://(?:www\.)?motherless\.com/(?:g/[a-z0-9_]+/)?(?P<id>[A-Z0-9]+)'
+    _VALID_URL = r'https?://(?:www\.)?motherless\.com/(?:g/[a-z0-9_]+/|G[VIG]?[A-F0-9]+/)?(?P<id>[A-F0-9]+)'
     _TESTS = [{
         'url': 'http://motherless.com/AC3FFE1',
         'md5': '310f62e325a9fafe64f68c0bccb6e75f',
@@ -245,5 +246,77 @@ class MotherlessGroupIE(InfoExtractor):
             'id': group_id,
             'title': title,
             'description': description,
+            'entries': playlist
+        }
+
+
+class MotherlessGalleryIE(InfoExtractor):
+    _VALID_URL = r'https?://(?:www\.)?motherless\.com/G[VIG]?(?P<id>[A-F0-9]+)'
+    _TESTS = [{
+        'url': 'https://motherless.com/G035DE2F',
+        'info_dict': {
+            'id': '035DE2F',
+            'title': 'General',
+        },
+        'playlist_mincount': 400,
+    }, {
+        'url': 'https://motherless.com/G059DBE0',
+        'info_dict': {
+            'id': '059DBE0',
+            'title': '90909090',
+        },
+        'playlist_mincount': 300,
+    }]
+
+    def _extract_entries(self, webpage, base):
+        entries = []
+        for mobj in re.finditer(
+                r'<a href="(?P<href>/[^"]+)"\s+title="(?P<title>[^"]+)"',
+                webpage):
+            video_url = compat_urlparse.urljoin(base, mobj.group('href'))
+            if not MotherlessIE.suitable(video_url):
+                continue
+            video_id = MotherlessIE._match_id(video_url)
+            title = mobj.group('title')
+            entries.append(self.url_result(
+                video_url, ie=MotherlessIE.ie_key(), video_id=video_id,
+                video_title=title))
+        # Alternative fallback
+        if not entries:
+            entries = [
+                self.url_result(
+                    compat_urlparse.urljoin(base, '/' + entry_id),
+                    ie=MotherlessIE.ie_key(), video_id=entry_id)
+                for entry_id in orderedSet(re.findall(
+                    r'data-codename=["\']([A-Z0-9]+)', webpage))]
+        return entries
+
+    def _real_extract(self, url):
+        PAGE_SIZE = 60
+        group_id = self._match_id(url)
+        page_url = compat_urlparse.urljoin(url, '/GV%s' % group_id)
+        webpage = self._download_webpage(page_url, group_id)
+        # Titles have unicode
+        title = self._search_regex(
+            r'<title>([^<]+)\s\|\sMOTHERLESS.COM', webpage, 'title', fatal=False)
+
+        def _get_page(idx):
+            idx += 1
+            query = {}
+            if idx != 1:
+                query = {'page': idx}
+            webpage = self._download_webpage(
+                page_url, group_id, query=query,
+                note=f'Downloading page {idx}'
+            )
+            for entry in self._extract_entries(webpage, url):
+                yield entry
+
+        playlist = OnDemandPagedList(_get_page, PAGE_SIZE)
+
+        return {
+            '_type': 'playlist',
+            'id': group_id,
+            'title': title,
             'entries': playlist
         }
